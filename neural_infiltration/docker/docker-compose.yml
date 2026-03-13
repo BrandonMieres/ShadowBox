@@ -1,0 +1,15 @@
+services:
+  web:
+    container_name: neural_web
+    build: .
+    ports:
+      - "8083:80"
+    volumes:
+      - ../www:/var/www/html
+    networks:
+      - neural_net
+    restart: unless-stopped
+
+networks:
+  neural_net:
+    driver: bridge

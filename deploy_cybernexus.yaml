@@ -1,0 +1,148 @@
+---
+- name: Desplegar entorn de pentesting per a CyberNexus
+  hosts: localhost
+  connection: local
+  become: yes
+
+  vars:
+    docker_container_name: "vulnerable_webapp"
+    db_container_name: "vulnerable_db"
+    postgres_password: "ShadowBox123!"
+    admin_user: "Admin"
+    exposed_port: 8080
+    project_dir: "/home/ubuntu/cybernexus"
+    orig_sql_file: "{{ project_dir }}/db_init/init.sql"
+    temp_sql_file: "{{ project_dir }}/db_init/init_temp.sql"
+    flag_prefix: "SH4D0WB0X_"
+    maquina_nombre: "CyberNexus"
+    db_name: "shadow_db"
+    admin_password: "P@ssw0rd-Adm1n-{{ 999 | random | to_uuid }}"
+
+  pre_tasks:
+    - name: Generar la flag única
+      set_fact:
+        secret_flag: "{{ flag_prefix }}{{ 1000 | random | to_uuid }}"
+
+  tasks:
+
+    - name: 1. Crear estructura de carpetas
+      block:
+        - file:
+            path: "{{ project_dir }}/docker"
+            state: directory
+            mode: '0755'
+        - file:
+            path: "{{ project_dir }}/db_init"
+            state: directory
+            mode: '0755'
+        - file:
+            path: "{{ project_dir }}/www"
+            state: directory
+            mode: '0755'
+        - file:
+            path: "{{ project_dir }}/www/css"
+            state: directory
+            mode: '0755'
+
+    - name: 2. Copiar ficheros de configuración de Docker
+      block:
+        - copy:
+            src: "{{ playbook_dir }}/cybernexus/docker/Dockerfile"
+            dest: "{{ project_dir }}/docker/Dockerfile"
+        - copy:
+            src: "{{ playbook_dir }}/cybernexus/docker/docker-compose.yml"
+            dest: "{{ project_dir }}/docker/docker-compose.yml"
+
+    - name: 3. Copiar código web a /www
+      block:
+        - copy:
+            src: "{{ playbook_dir }}/cybernexus/www/"
+            dest: "{{ project_dir }}/www/"
+            mode: '0644'
+
+    - name: 4. Preparar init_temp.sql con credenciales y flag
+      block:
+        - copy:
+            src: "{{ orig_sql_file }}"
+            dest: "{{ temp_sql_file }}"
+            mode: '0644'
+        - replace:
+            path: "{{ temp_sql_file }}"
+            regexp: '__ADMIN_PASSWORD__'
+            replace: "{{ admin_password }}"
+        - replace:
+            path: "{{ temp_sql_file }}"
+            regexp: '__SECRET_FLAG__'
+            replace: "{{ secret_flag }}"
+        - copy:
+            src: "{{ temp_sql_file }}"
+            dest: "{{ orig_sql_file }}"
+            mode: '0644'
+
+    - name: 5. Detener contenedores antiguos
+      command: docker compose down -v
+      args:
+        chdir: "{{ project_dir }}/docker"
+      ignore_errors: yes
+
+    - name: 6. Levantar base de datos y esperar readiness
+      block:
+        - command: docker compose up -d --build db
+          args:
+            chdir: "{{ project_dir }}/docker"
+        - name: Esperar a que PostgreSQL acepte conexiones
+          command: >
+            docker exec {{ db_container_name }}
+            pg_isready -U postgres -d {{ db_name }}
+          register: db_ready
+          retries: 12
+          delay: 5
+          until: db_ready.rc == 0
+
+    - name: 7. Actualizar flag en base de datos local
+      command: >
+        docker exec -i {{ db_container_name }} psql -U postgres -d {{ db_name }}
+        -c "UPDATE maquinas SET respuesta = '{{ secret_flag }}' WHERE nombre = '{{ maquina_nombre }}';"
+
+    - name: 8. Levantar servicio web
+      command: docker compose up -d --build web
+      args:
+        chdir: "{{ project_dir }}/docker"
+
+    - name: 9. Esperar y verificar servicio web
+      block:
+        - wait_for:
+            host: localhost
+            port: "{{ exposed_port }}"
+            timeout: 30
+        - uri:
+            url: "http://localhost:{{ exposed_port }}"
+            return_content: yes
+          register: web_test
+          ignore_errors: yes
+
+    - name: 10. Registrar flag en la base de datos remota (Neon)
+      community.postgresql.postgresql_query:
+        db: shadows
+        login_user: shadows_owner
+        login_password: npg_NMFyn6QGR5re
+        login_host: ep-dark-credit-a2jn9u2r-pooler.eu-central-1.aws.neon.tech
+        port: 5432
+        ssl_mode: require
+        query: |
+          UPDATE maquinas
+          SET respuesta = '{{ secret_flag }}'
+          WHERE nombre = '{{ maquina_nombre }}';
+
+    - name: 11. Eliminar fichero SQL temporal
+      file:
+        path: "{{ temp_sql_file }}"
+        state: absent
+
+    - name: 12. Mostrar credenciales y flag final
+      debug:
+        msg: |
+          ✅ CyberNexus desplegada correctamente!
+          URL: http://localhost:{{ exposed_port }}
+          Admin: {{ admin_user }} / {{ admin_password }}
+          FLAG: {{ secret_flag }}

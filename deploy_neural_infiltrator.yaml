@@ -1,0 +1,129 @@
+---
+- name: Desplegar entorn de pentesting per a Neural Infiltration
+  hosts: localhost
+  connection: local
+  become: yes
+
+  vars:
+    container_name: "neural_web"
+    network_name: "neural_net"
+    exposed_port: 8083
+    project_dir: "/home/ubuntu/neural_infiltration"
+    flag_prefix: "SH4D0WB0X_"
+    maquina_nombre: "Neural Infiltrator"
+    secret_flag: "{{ flag_prefix }}{{ 1000 | random | to_uuid }}"
+
+  pre_tasks:
+    - name: Verificar si Ansible té la col·lecció community.postgresql
+      command: ansible-galaxy collection list community.postgresql
+      register: check_pg_collection
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Instal·lar community.postgresql si cal
+      command: ansible-galaxy collection install community.postgresql
+      when: check_pg_collection.rc != 0
+
+  tasks:
+    - name: Generar flag dinàmica
+      set_fact:
+        secret_flag: "{{ flag_prefix }}{{ 1000 | random | to_uuid }}"
+
+    - name: Eliminar containerd si cal per evitar conflictes
+      apt:
+        name: containerd
+        state: absent
+      ignore_errors: yes
+
+    - name: Afegir clau GPG de Docker
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+
+    - name: Afegir repositori oficial de Docker
+      apt_repository:
+        repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        state: present
+        update_cache: yes
+
+    - name: Instal·lar Docker
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-compose-plugin
+        state: present
+        update_cache: yes
+
+    - name: Iniciar i habilitar Docker
+      service:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Crear flag dins de hidden.php
+      copy:
+        dest: "{{ project_dir }}/www/pages/hidden.php"
+        content: "<?php echo '{{ secret_flag }}'; ?>"
+        mode: '0644'
+
+    - name: Crear xarxa docker específica
+      community.docker.docker_network:
+        name: "{{ network_name }}"
+        state: present
+
+    - name: Detenir contenidors anteriors
+      command: docker compose -f {{ project_dir }}/docker/docker-compose.yml down -v
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Construir i desplegar contenidors
+      command: docker compose -f {{ project_dir }}/docker/docker-compose.yml up -d --build
+      args:
+        chdir: "{{ project_dir }}/docker"
+
+    - name: Esperar servei
+      wait_for:
+        host: localhost
+        port: "{{ exposed_port }}"
+        timeout: 30
+
+    - name: Comprovar accés web
+      uri:
+        url: "http://localhost:{{ exposed_port }}"
+        return_content: yes
+      register: web_status
+      ignore_errors: yes
+
+    - name: Guardar credencials
+      copy:
+        dest: "{{ project_dir }}/credentials.txt"
+        content: |
+          🧠 Màquina: {{ maquina_nombre }}
+          🌐 URL: http://localhost:{{ exposed_port }}
+          🏁 Flag: {{ secret_flag }}
+
+          💀 Vector:
+          - LFI: http://localhost:{{ exposed_port }}/index.php?page=hidden
+        mode: '0600'
+
+    - name: Inserir flag a la base de dades Neon
+      community.postgresql.postgresql_query:
+        db: shadows
+        login_user: shadows_owner
+        login_password: npg_NMFyn6QGR5re
+        login_host: ep-dark-credit-a2jn9u2r-pooler.eu-central-1.aws.neon.tech
+        port: 5432
+        ssl_mode: require
+        query: |
+          UPDATE maquinas
+          SET respuesta = '{{ secret_flag }}'
+          WHERE nombre = '{{ maquina_nombre }}';
+
+    - name: Mostrar resum final
+      debug:
+        msg: |
+          ✅ Neural Infiltration desplegada correctament
+          URL: http://localhost:{{ exposed_port }}
+          FLAG: {{ secret_flag }}
